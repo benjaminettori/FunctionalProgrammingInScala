@@ -1,5 +1,4 @@
 import Chapter8._
-
 import scala.util.matching.Regex
 object Chapter9 {
 
@@ -8,10 +7,33 @@ object Chapter9 {
 
   // self => : This syntax assigns instance of Parsers to the variable self
 
-  trait Parsers[Parser[+_]] { self =>
+  trait Parsers { self =>
+
+    type Parser[A] = Location => Result[A]
+
+    trait Result[+A] {
+      def mapError(f: ParseError => ParseError) : Result[A] = this match {
+        case Failure(e) => Failure(f(e))
+        case _ => this
+      }
+    }
+
+    case class Success[+A](get: A, charsConsumed: Int) extends Result[A]
+    case class Failure(get: ParseError) extends Result[Nothing]
+
     // stack is the list of error messages indicating what Parser was doing when it failed.
     // if run(p)(s) is Left(e1), then run(scope(msg)(p)) is Left(e2) where e2.stack.Head is msg, e2.stack.tail is e1
-    case class ParseError(stack: List[(Location, String)])
+    case class ParseError(stack: List[(Location, String)]) {
+      // copy is a method to clone the existing class and update the stack variable.
+      def push(loc: Location, msg: String) : ParseError = copy(stack = (loc, msg) :: stack)
+
+      def latest: Option[(Location, String)] = stack.lastOption
+      def latestLoc: Option[Location] = latest.map(v => v._1)
+
+      // replace contents of stack with last location and new message
+      def label[A](s: String) : ParseError = ParseError(latestLoc.map(v => (v, s)).toList)
+    }
+
 
     def run[A](p: Parser[A])(input: String): Either[ParseError, A]
     def char(c: Char): Parser[Char]
@@ -20,7 +42,13 @@ object Chapter9 {
     def or[A](s1: Parser[A], s2: => Parser[A]): Parser[A]
 
     // this enables us to write : "abracadabra" to get parser of type string directly, instead of having to call string()
-    implicit def string(s: String): Parser[String]
+    implicit def string(s: String): Parser[String] = scope(s"currently parsing string $s")(loc => {
+      if (loc.input.slice(loc.offset, loc.input.length).startsWith(s)) {
+        Success(s, loc.offset + s.length)
+      } else {
+        Failure(ParseError(List((loc, "Could not parse current string"))))
+      }
+    })
 
     // this converts Parser to ParserOps, giving Parser access to ParserOps methods
     implicit def operators[A](p: Parser[A]) : ParserOps[A] = ParserOps[A](p)
@@ -107,7 +135,7 @@ object Chapter9 {
 
     // Ex 9.1
     // Require 1 or more char values in a a string
-    def many1[A](p: Parser[A]): Parser[List[A]] = map2(p, p.many)((a, b) => a :: b)
+    def many1[A](p: Parser[A]): Parser[List[A]] = map2(p, p.many())((a, b) => a :: b)
 
     def flatMap[A, B](p: Parser[A])(f: A => Parser[B]): Parser[B]
 
@@ -173,7 +201,7 @@ object Chapter9 {
     /** Error Reporting */
     // Ex 9.10
     // If p fails, it's ParserError will display msg.
-    def label[A](msg: String)(p: Parser[A]) : Parser[A]
+    def label[A](msg: String)(p: Parser[A]) : Parser[A] = loc => p(loc).mapError(err => err.label(msg))
 
     // Method to answer question: Where did the error occur?
     // offset value would presumably be returned from ParseError object
@@ -191,7 +219,9 @@ object Chapter9 {
 
     // Provide scope on what Parser was doing when it failed
     // Msg provides that information
-    def scope[A](msg: String)(p: Parser[A]) : Parser[A]
+    def scope[A](msg: String)(p: Parser[A]) : Parser[A] = {
+      loc => p(loc).mapError(err => err.push(loc, msg))
+    }
 
     // Attempt a parser p, and if it fails, report parser error, unless p failed immediately, in which case try p2.
     // Example: (attempt("abra" ** "abra") ** "cadabra") || ("abra" ** "cadabra")
@@ -206,8 +236,6 @@ object Chapter9 {
 
     // return error that occurred most recently
     def latest[A](p: Parser[A]) : Parser[A]
-
-    //type Parser[A] = Location => Either[A, Error]
   }
 
   trait JSON
@@ -221,7 +249,7 @@ object Chapter9 {
 
     // Ex 9.9
     // Design a JSON parser
-    def jsonParser[Err, Parser[+_]](P: Parsers[Parser]): Parser[JSON] = {
+    def jsonParser[Err](P: Parsers): P.Parser[JSON] = {
       import P._
       val openingBrace = char('{')
       val comma = char(',')
@@ -250,5 +278,50 @@ object Chapter9 {
 
 
   def main(args: Array[String]): Unit = {
+    object myParsers extends Parsers {
+      override def run[A](p: myParsers.Parser[A])(input: String): Either[myParsers.ParseError, A] = ???
+
+      override def char(c: Char): myParsers.Parser[Char] = ???
+
+      override def or[A](s1: myParsers.Parser[A], s2: => myParsers.Parser[A]): myParsers.Parser[A] = ???
+
+      // Ex 9.13
+      override implicit def regex(r: Regex): myParsers.Parser[String] = loc => {
+        r.findPrefixOf(loc.input) match {
+          case Some(s) => Success(s, loc.offset + s.length)
+          case None => Failure(ParseError(List((loc, "Could not match regex."))))
+        }
+      }
+
+      override def wrap[A](p: => myParsers.Parser[A]): myParsers.Parser[A] = ???
+
+      override def slice[A](p: myParsers.Parser[A]): myParsers.Parser[String] = loc => {
+        p(loc) match {
+          case Success(s, n) => Success(loc.input.slice(0, n), n)
+          case Failure(_) => Failure(ParseError(List((loc, "Did not succeed so no slice"))))
+        }
+      }
+
+      override def flatMap[A, B](p: myParsers.Parser[A])(f: (A) => myParsers.Parser[B]): myParsers.Parser[B] = ???
+
+      /** Error Reporting */
+      override def label[A](msg: String)(p: myParsers.Parser[A]): myParsers.Parser[A] = ???
+
+      override def errorLocation(e: myParsers.ParseError): myParsers.Location = ???
+
+      override def errorMessage(e: myParsers.ParseError): String = ???
+
+      override def attempt[A](p: myParsers.Parser[A]): myParsers.Parser[A] = ???
+
+      override def furthest[A](p: myParsers.Parser[A]): myParsers.Parser[A] = ???
+
+      override def latest[A](p: myParsers.Parser[A]): myParsers.Parser[A] = ???
+    }
+
+    val test = "Hello and welcome"
+    val testLocation = new myParsers.Location(test)
+    val subString = "ello and"
+    val result = myParsers.string(subString)
+    println(result(testLocation))
   }
 }

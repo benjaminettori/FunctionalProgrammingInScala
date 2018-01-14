@@ -1,4 +1,4 @@
-val myString = "\bHello\b"
+val myString = "Hello"
 val regex = myString.r
 
 regex.pattern.matcher("Ben").matches()
