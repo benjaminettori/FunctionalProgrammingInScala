@@ -13,17 +13,38 @@ object Chapter9 {
 
     trait Result[+A] {
       def mapError(f: ParseError => ParseError) : Result[A] = this match {
-        case Failure(e) => Failure(f(e))
+        case Failure(e, c) => Failure(f(e), c)
         case _ => this
+      }
+
+      def uncommit(): Result[A] = {
+        this match {
+          case Failure(g, true) => Failure(g, false)
+          case _ => this
+        }
+      }
+
+      def addCommit(commit: Boolean): Result[A] = {
+        this match {
+          case Failure(e, c) => Failure(e, c || commit)
+          case _ => this
+        }
+      }
+
+      def advanceSuccess(n: Int): Result[A] = {
+        this match {
+          case Success(g, c)=> Success(g, c + n)
+          case _ => this
+        }
       }
     }
 
     case class Success[+A](get: A, charsConsumed: Int) extends Result[A]
-    case class Failure(get: ParseError) extends Result[Nothing]
+    case class Failure(get: ParseError, committed: Boolean) extends Result[Nothing]
 
     // stack is the list of error messages indicating what Parser was doing when it failed.
     // if run(p)(s) is Left(e1), then run(scope(msg)(p)) is Left(e2) where e2.stack.Head is msg, e2.stack.tail is e1
-    case class ParseError(stack: List[(Location, String)]) {
+    case class ParseError(stack: List[(Location, String)] = List(), otherErrors: List[ParseError] = List()) {
       // copy is a method to clone the existing class and update the stack variable.
       def push(loc: Location, msg: String) : ParseError = copy(stack = (loc, msg) :: stack)
 
@@ -32,11 +53,37 @@ object Chapter9 {
 
       // replace contents of stack with last location and new message
       def label[A](s: String) : ParseError = ParseError(latestLoc.map(v => (v, s)).toList)
+
+      override def toString =
+        if (stack.isEmpty) "no error message"
+        else {
+          val collapsed = collapseStack(stack)
+          val context =
+            collapsed.lastOption.map("\n\n" + _._1.line).getOrElse("") +
+              collapsed.lastOption.map("\n" + _._1.col).getOrElse("")
+          collapsed.map { case (loc,msg) => loc.line.toString + "." + loc.col + " " + msg }.mkString("\n") +
+            context
+        }
+
+      def addError(error: ParseError): ParseError = this.copy(stack, error :: this.otherErrors)
+
+      def collapseStack(s: List[(Location,String)]): List[(Location,String)] =
+        s.groupBy(_._1).
+          mapValues(_.map(_._2).mkString("; ")).
+          toList.sortBy(_._1.offset)
+
+      def formatLoc(l: Location): String = l.line + "." + l.col
     }
 
 
     def run[A](p: Parser[A])(input: String): Either[ParseError, A]
-    def char(c: Char): Parser[Char]
+    def char(c: Char): Parser[Char] = scope(s"Currently processing character $c")(loc => {
+      if(loc.input.slice(loc.offset, loc.input.length).startsWith(c.toString)) {
+        Success(c, loc.offset + 1)
+      } else {
+        Failure(ParseError(List((loc, "Could not find character in current string"))), committed = true)
+      }
+    })
 
     // 2nd parameter is non-strict as we may not need to evaluate it.
     def or[A](s1: Parser[A], s2: => Parser[A]): Parser[A]
@@ -46,7 +93,7 @@ object Chapter9 {
       if (loc.input.slice(loc.offset, loc.input.length).startsWith(s)) {
         Success(s, loc.offset + s.length)
       } else {
-        Failure(ParseError(List((loc, "Could not parse current string"))))
+        Failure(ParseError(List((loc, "Could not parse current string"))), true)
       }
     })
 
@@ -211,6 +258,10 @@ object Chapter9 {
         case -1 => offset + 1
         case lineStart => offset - lineStart
       }
+
+      // Move location forward by n characters.
+      // copy current location by n
+      def advanceBy(n: Int): Location = copy(offset = offset + n)
     }
 
     // Extract error location and error message
@@ -279,39 +330,60 @@ object Chapter9 {
 
   def main(args: Array[String]): Unit = {
     object myParsers extends Parsers {
-      override def run[A](p: myParsers.Parser[A])(input: String): Either[myParsers.ParseError, A] = ???
+      // Ex 9.15
+      override def run[A](p: myParsers.Parser[A])(input: String): Either[ParseError, A] = {
+        val location = Location(input)
+        p(location) match {
+          case Success(r, _) => Right(r)
+          case Failure(pe, _) => Left(pe)
+        }
+      }
 
-      override def char(c: Char): myParsers.Parser[Char] = ???
+      override def or[A](s1: myParsers.Parser[A], s2: => myParsers.Parser[A]): myParsers.Parser[A] = loc => {
+        s1(loc) match {
+          case Failure(prevErr, false) => s2(loc).mapError(pe => pe.addError(prevErr))
+          case x => x
+        }
+      }
 
-      override def or[A](s1: myParsers.Parser[A], s2: => myParsers.Parser[A]): myParsers.Parser[A] = ???
 
       // Ex 9.13
       override implicit def regex(r: Regex): myParsers.Parser[String] = loc => {
         r.findPrefixOf(loc.input) match {
           case Some(s) => Success(s, loc.offset + s.length)
-          case None => Failure(ParseError(List((loc, "Could not match regex."))))
+          case None => Failure(ParseError(List((loc, "Could not match regex."))), true)
         }
       }
 
-      override def wrap[A](p: => myParsers.Parser[A]): myParsers.Parser[A] = ???
+      override def wrap[A](p: => myParsers.Parser[A]): myParsers.Parser[A] = p
 
+      // Retrieve portion of string that was processed by parser
       override def slice[A](p: myParsers.Parser[A]): myParsers.Parser[String] = loc => {
         p(loc) match {
-          case Success(s, n) => Success(loc.input.slice(0, n), n)
-          case Failure(_) => Failure(ParseError(List((loc, "Did not succeed so no slice"))))
+          case Success(_, n) => Success(loc.input.slice(loc.offset, loc.offset + n), n)
+          case f@Failure(_, _) => f
         }
       }
 
-      override def flatMap[A, B](p: myParsers.Parser[A])(f: (A) => myParsers.Parser[B]): myParsers.Parser[B] = ???
+      /**
+        * If the first parser is a success, execute the second parser after advancing the location by n
+        * Commit the result if at least 1 character was consumed
+        * On success of the second cursor, account for result of first cursor by incrementing characters consumed by n
+        *  */
+      override def flatMap[A, B](p: myParsers.Parser[A])(f: (A) => myParsers.Parser[B]): myParsers.Parser[B] = loc => {
+        p(loc) match {
+          case Success(g, n) => f(g)(loc.advanceBy(n)).addCommit(n > 0).advanceSuccess(n)
+          case e@Failure(_, _) => e
+        }
+      }
 
       /** Error Reporting */
-      override def label[A](msg: String)(p: myParsers.Parser[A]): myParsers.Parser[A] = ???
 
       override def errorLocation(e: myParsers.ParseError): myParsers.Location = ???
 
       override def errorMessage(e: myParsers.ParseError): String = ???
 
-      override def attempt[A](p: myParsers.Parser[A]): myParsers.Parser[A] = ???
+      override def attempt[A](p: myParsers.Parser[A]): myParsers.Parser[A] = loc => p(loc).uncommit()
 
       override def furthest[A](p: myParsers.Parser[A]): myParsers.Parser[A] = ???
 
