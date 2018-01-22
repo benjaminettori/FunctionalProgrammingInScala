@@ -394,6 +394,8 @@ object Chapter9 {
     val testLocation = new myParsers.Location(test)
     val subString = "ello and"
     val result = myParsers.string(subString)
+
+    val manyTest = myParsers.many(myParsers.char('a'))
     println(result(testLocation))
   }
 }
