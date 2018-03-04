@@ -5,7 +5,9 @@
 import Chapter6.ScalaState
 import Chapter8._
 import Chapter7._
-import java.util.concurrent.Callable;
+import java.util.concurrent.Callable
+
+import Chapter3.{Branch, Leaf, Tree}
 
 object Chapter10 {
 
@@ -220,6 +222,8 @@ object Chapter10 {
     def foldLeft[A, B](as: F[A])(z: B)(f: (B, A) => B) : B
     def foldMap[A, B](as: F[A], m: Monoid[B])(f: A => B) : B
     def concatenate[A](as: F[A], m: Monoid[A]) : A = foldLeft(as)(m.identity)(m.op)
+    // Ex 10.15
+    def toList[A](fa: F[A]) : List[A] = foldLeft(fa)(List(): List[A])((b, a) => a :: b)
     }
 
   /*** Ex 10.12 */
@@ -227,8 +231,124 @@ object Chapter10 {
     override def foldRight[A, B](as: List[A])(z: B)(f: (A, B) => B): B = as.foldRight(z)(f)
     override def foldLeft[A, B](as: List[A])(z: B)(f: (B, A) => B) : B = as.foldLeft(z)(f)
 
-    override def foldMap[A, B](as: List[A], m: Monoid[B])(f: (A) => B): B = ???
+    override def foldMap[A, B](as: List[A], m: Monoid[B])(f: (A) => B): B = foldLeft(as)(m.identity)((b, a) => m.op(b, f(a)))
   }
+
+  object SeqFoldable extends Foldable[IndexedSeq] {
+    override def foldRight[A, B](as: IndexedSeq[A])(z: B)(f: (A, B) => B): B = as.foldRight(z)(f)
+
+    override def foldLeft[A, B](as: IndexedSeq[A])(z: B)(f: (B, A) => B): B = as.foldLeft(z)(f)
+
+    override def foldMap[A, B](as: IndexedSeq[A], m: Monoid[B])(f: (A) => B): B = foldMapV(as, m)(f)
+  }
+
+  object StreamFoldable extends Foldable[Stream] {
+    override def foldRight[A, B](as: Stream[A])(z: B)(f: (A, B) => B): B = as.foldRight(z)(f)
+
+    override def foldLeft[A, B](as: Stream[A])(z: B)(f: (B, A) => B): B = as.foldLeft(z)(f)
+
+    override def foldMap[A, B](as: Stream[A], m: Monoid[B])(f: (A) => B): B = foldLeft(as)(m.identity)((b, a) => m.op(b, f(a)))
+  }
+
+  /***
+    *
+    * Ex 10.13
+    */
+
+  object TreeFoldable extends Foldable[Tree] {
+    override def foldRight[A, B](as: Tree[A])(z: B)(f: (A, B) => B): B = {
+      as match {
+        case Leaf(l) => f(l, z)
+        case Branch(l, r) => foldRight(l)(foldRight(r)(z)(f))(f)
+      }
+    }
+
+    override def foldLeft[A, B](as: Tree[A])(z: B)(f: (B, A) => B): B = {
+      as match {
+        case Leaf(l) => f(z, l)
+        case Branch(l,r) => foldLeft(r)(foldLeft(l)(z)(f))(f)
+      }
+    }
+
+    override def foldMap[A, B](as: Tree[A], m: Monoid[B])(f: (A) => B): B = foldLeft(as)(m.identity)((b, a) => m.op(b, f(a)))
+  }
+
+  /***
+    *
+    * Ex 10.14
+    */
+
+  object OptionFoldable extends Foldable[Option] {
+    override def foldRight[A, B](as: Option[A])(z: B)(f: (A, B) => B): B = {
+      as match {
+        case Some(a) => f(a, z)
+        case None => z
+      }
+    }
+
+    override def foldLeft[A, B](as: Option[A])(z: B)(f: (B, A) => B): B = {
+      as match {
+        case Some(a) => f(z, a)
+        case None => z
+      }
+    }
+
+    override def foldMap[A, B](as: Option[A], m: Monoid[B])(f: (A) => B): B = foldLeft(as)(m.identity)((b, a) => m.op(b, f(a)))
+  }
+
+  /***
+    *
+    * Ex 10.16
+    */
+
+  def productMonoid[A, B](a: Monoid[A], b: Monoid[B]): Monoid[(A, B)] = {
+    new Monoid[(A, B)] {
+      def op(x: (A, B), y: (A, B)) : (A, B) = (a.op(x._1, y._1), b.op(x._2, y._2))
+
+      override def identity = (a.identity, b.identity)
+    }
+  }
+
+
+  /***
+    *
+    * method uses the fact that value type is monoid to create a monoid of map
+    * This concept can be generalized
+    * As long as the type of element a data structure contains is a monoid, the data structure can be a monoid
+    */
+  def mapMergeMonoid[K, V](V: Monoid[V]) : Monoid[Map[K, V]] = {
+    new Monoid[Map[K, V]] {
+      def identity = Map[K, V]()
+      def op(a: Map[K, V], b: Map[K, V]) : Map[K, V] = (a.keySet ++ b.keySet).foldLeft(identity) {(acc, k) => acc.updated(k, V.op(a.getOrElse(k, V.identity), b.getOrElse(k, V.identity)))}
+    }
+  }
+
+  /***
+    *
+    * Ex 10.17
+    */
+
+  def functionMonoid[A, B](B: Monoid[B]) : Monoid[A => B] = {
+    new Monoid[A =>B] {
+      def identity = (_ : A) => B.identity
+      def op(x : A => B, y : A => B) : A => B = (a) => B.op(x(a), y(a))
+    }
+  }
+
+  /***
+    *
+    * Ex 10.18
+    */
+  val intAddition = new Monoid[Int] {
+    def op(a: Int, b: Int) = a + b
+    def identity = 0
+  }
+
+  def bag[A](as: IndexedSeq[A]) : Map[A, Int] = {
+    val mapMonoid : Monoid[Map[A, Int]] = mapMergeMonoid(intAddition)
+    foldMapV(as, mapMonoid)(a => Map(a -> 1))
+  }
+
 
   def main(args: Array[String]): Unit = {
     /*** Ex 10.1
@@ -309,6 +429,23 @@ object Chapter10 {
     val testString = " Lorem ipsum dolor Emma tempus fugit Judi birthday"
     println(countWordsInString(testString))
     println(countWordsInString_v2(testString))
+
+    val tree = Branch(Leaf(1), Leaf(3))
+
+    val treefold = TreeFoldable.foldLeft(tree)(0)((b, a) => a + b)
+    println(treefold)
+
+    println(bag(Vector("a", "rose", "is", "a", "rose")))
+
+    /***
+      *
+      * Example of using product of monoids to perform 2 operations in one list traversal
+      * Here we use the intAddition monoid to calculate both the length and sum of a list simultaneously
+      */
+
+    val m = productMonoid(intAddition, intAddition)
+    val p = ListFoldable.foldMap(List(1,2,3,4), m)(a => (1, a))
+    println(p)
   }
 }
 

@@ -249,14 +249,14 @@ object Chapter3 {
 
     println(mapTree(testTree)(x => x > 3))
 
-//    def fold[A, B](a: Tree[A])(f: A => B)(g: (B, B) => B): B ={
-//      a match {
-//        case Leaf(x) => f(x)
-//        case Branch(l, r) => g(fold(l)(f), fold(r)(f))
-//      }
-//    }
-//
-//    def depthFold[A](t: Tree[A]): Int = fold(t)(a => 0)((d1, d2) => 1 +  (d1 max d2))
-//    def mapFold[A, B](t: Tree[A])(f: A => B): Tree[B] = fold(t)(a => Leaf(f(a)): Tree[B])((t1, t2) => Branch(t1, t2))
+    def fold[A, B](a: Tree[A])(f: A => B)(g: (B, B) => B): B ={
+      a match {
+        case Leaf(x) => f(x)
+        case Branch(l, r) => g(fold(l)(f)(g), fold(r)(f)(g))
+      }
+    }
+
+    def depthFold[A](t: Tree[A]): Int = fold(t)(a => 0)((d1, d2) => 1 +  (d1 max d2))
+    def mapFold[A, B](t: Tree[A])(f: A => B): Tree[B] = fold(t)(a => Leaf(f(a)): Tree[B])((t1, t2) => Branch(t1, t2))
   }
 }
