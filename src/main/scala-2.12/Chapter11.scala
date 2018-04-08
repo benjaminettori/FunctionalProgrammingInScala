@@ -43,6 +43,17 @@ object Chapter11 {
 
     def flatMap[A, B](fa: F[A])(f: A => F[B]): F[B]
     def unit[A](a: => A): F[A]
+
+    /***
+      *
+      * Ex 11.3
+      */
+    def sequence[A](lma: List[F[A]]) : F[List[A]] = lma match {
+      case fa :: h => map2(fa, sequence(h))(_ :: _)
+      case fa :: Nil => flatMap(fa)(a => unit(List(a)))
+    }
+
+    def traverse[A, B](la: List[A])(f: A => F[B]) : F[List[B]] = sequence(la.map(a => f(a)))
   }
 
   /***
@@ -85,5 +96,9 @@ object Chapter11 {
     def unit[A](a: => A) : Chapter6.ScalaState[S, A] = Chapter6.ScalaState(s => (a,s))
     override def flatMap[A, B](fa: Chapter6.ScalaState[S, A])(f: (A) => Chapter6.ScalaState[S, B]): Chapter6.ScalaState[S, B] = fa.flatMap(a => f(a))
   }
+
+  /***
+    * Ex 11.3
+    */
 
 }
