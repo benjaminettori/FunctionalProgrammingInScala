@@ -1,6 +1,7 @@
 /**
   * Created by bettori on 9/13/2017.
   */
+
 object Chapter6 {
 
   trait RNG {
