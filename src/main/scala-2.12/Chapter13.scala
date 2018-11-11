@@ -67,16 +67,6 @@ object Chapter13 {
   }
 
   sealed trait TailRec[A] {
-    @tailrec
-    final def run[A](ioa :TailRec[A]) : A = ioa match {
-        case Return(v) => v
-        case Suspend(res) => res()
-        case FlatMap(x, f: (Any => TailRec[A])) => x match {
-          case Return(a) => run(f(a))
-          case Suspend(r) => run(f(r()))
-          case FlatMap(y, g : (Any => TailRec[Any])) => run(y flatMap (a =>  g(a) flatMap f))
-        }
-      }
     def map[B](f : A => B) : TailRec[B] = flatMap(f andThen(x => Return(x)))
     def flatMap[B](f : A => TailRec[B]) : TailRec[B] = FlatMap(this, f)
   }
@@ -92,6 +82,17 @@ object Chapter13 {
 
     }
     def apply[A](a: => A): TailRec[A] = unit(a)
+
+    @tailrec
+    final def run[A](ioa :TailRec[A]) : A = ioa match {
+      case Return(v) => v
+      case Suspend(res) => res()
+      case FlatMap(x, f: (Any => TailRec[A])) => x match {
+        case Return(a) => run(f(a))
+        case Suspend(r) => run(f(r()))
+        case FlatMap(y, g : (Any => TailRec[Any])) => run(y flatMap (a =>  g(a) flatMap f))
+      }
+    }
   }
 
   def fahrenheitToCelsius(f: Double) : Double = (f - 32) * 5.0/9.0
@@ -109,7 +110,22 @@ object Chapter13 {
   def printline(s: String) : TailRec[Unit] = {
     Suspend(() => Return(println(s)))
   }
-  
+
+  object TailRecExamples {
+    // Examples of stack overflow causing code
+    val f: Int => Int = (x: Int) => x
+    val g = List.fill(100000)(f).foldLeft(f)((x, y) => x compose y)
+
+    // Examples of stack safe code
+
+    val fSafe: Int => TailRec[Int] = (x: Int) => Return(x)
+    val gSafe : Int => TailRec[Int] = List.fill(100000)(fSafe).foldLeft(fSafe) {
+          // complicated way of telling it to suspend execution.
+      (a : (Int => TailRec[Int]), b: (Int => TailRec[Int])) => (x : Int) => Suspend(() => ()).flatMap(_ => a(x).flatMap(b))
+    }
+
+  }
+
   def main(args: Array[String]): Unit = {
     println("Test")
   }
