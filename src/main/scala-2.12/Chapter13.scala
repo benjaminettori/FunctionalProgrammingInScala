@@ -126,6 +126,90 @@ object Chapter13 {
 
   }
 
+  // Need to be able to support concurrency
+  object AsyncObj {
+    sealed trait Async[A] {
+      def flatMap[B](f: A => Async[B]) : Async[B] = {
+        FlatMap(this, f)
+      }
+
+      def map[B](f: A => B) : Async[B] = {
+        //flatMap(a => Return(f(a)))
+        flatMap(f andThen (Return(_)))
+      }
+    }
+
+    @tailrec
+    def step[A](a: Async[A]) : Async[A] = a match {
+      case FlatMap(FlatMap(x, g: (Any => Async[Any])), f: (Any => Async[A])) => step(g(x) flatMap(y => f(y)))
+      case FlatMap(Return(x), f: (Any => Async[A])) => step(f(x))
+      case _ => a
+    }
+
+    import Chapter7.Par
+
+    def run[A](as: Async[A]) : Par[A] = step(as) match {
+      case Return(a) => Par.unit(a)
+      case Suspend(res) => Chapter7.flatMap(res)(a => run(Return(a)))
+      case FlatMap(x, f: (Any => Async[A])) => x match {
+        case Suspend(r) => Chapter7.flatMap(r)(a => run(f(a)))
+        case _ => sys.error("Impossible, step already handles this")
+      }
+    }
+
+    case class Return[A](a: A) extends Async[A]
+    case class Suspend[A](resume: Chapter7.Par[A]) extends Async[A]
+    case class FlatMap[A, B](el: Async[A], f: A => Async[B]) extends Async[B]
+  }
+
+  object AbstractObj {
+
+    /***
+      * Abstract trait containing previous concepts
+      * @tparam F
+      * @tparam A
+      */
+    // Ex 13.1
+    sealed trait Free[F[_], A] {
+      def flatMap[B](f: A => Free[F, B]) : Free[F, B] = FlatMap(this, f)
+      def map[B](f: A => B) : Free[F, B] = {
+        flatMap(f andThen (Return(_)))
+      }
+    }
+
+    def freeMonad[F[_]]: Mon[({type f[A] = Free[F, A]})#f] = {
+      new Mon[({type f[A] = Free[F, A]})#f] {
+        override def flatMap[A, B](fa: Free[F, A])(f: A => Free[F, B]): Free[F, B] = fa.flatMap(f)
+
+        override def unit[A](a: => A): Free[F, A] = Return(a)
+      }
+    }
+
+    case class Return[A, F[_]](a: A) extends Free[F, A]
+    case class Suspend[A, F[_]](r: F[A]) extends Free[F, A]
+    case class FlatMap[A, B, F[_]](el: Free[F, A], f: A => Free[F, B]) extends Free[F, B]
+
+    // Ex 13.2
+    @tailrec
+    def runTrampoline[A](a: Free[Function0, A]) : A = {
+      a match {
+        case Return(a) => a
+        case Suspend(f: Function0[A]) => f.apply()
+        case FlatMap(el : Free[Function0, Any], f: (Any => Free[Function0, A])) => el match {
+          case Return(x) => runTrampoline(f(x))
+          case Suspend(r) => runTrampoline(f(r()))
+          case FlatMap(x, g: (Any => Free[Function0, Any])) => runTrampoline(x.flatMap(y => g(y).flatMap(f)))
+        }
+      }
+    }
+
+    /***
+      * Example of going from abstract trait Free to Async
+      * @tparam A
+      */
+    type Async[A] = Free[Chapter7.Par, A]
+  }
+
   def main(args: Array[String]): Unit = {
     println("Test")
   }
