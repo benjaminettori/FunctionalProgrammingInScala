@@ -1,6 +1,9 @@
 import Chapter11._
+import Chapter13.ConsoleIo.ConsoleIoImpl.ConsoleIo
+import Chapter7.Par
 
 import scala.annotation.tailrec
+import scala.io.StdIn
 
 object Chapter13 {
   case class Player(name: String, score: Int)
@@ -203,11 +206,137 @@ object Chapter13 {
       }
     }
 
+    //Ex 13.3
+    def run[F[_], A](a: Free[F, A])(implicit Fm: Mon[F]) : F[A] = {
+      step(a) match {
+        case Return(a) => Fm.unit(a)
+        case Suspend(r) => Fm.flatMap(r)(a => run(Return(a)))
+        case FlatMap(el, f: (Any => Free[F, A])) => el match {
+          case Suspend(r: F[Any]) => Fm.flatMap(r)(a => run(f(a)))
+          case _ => sys.error("Already covered by step")
+        }
+      }
+    }
+
+    @tailrec
+    def step[F[_], A](fa: Free[F, A]) : Free[F, A] = fa match {
+      case FlatMap(FlatMap(e, g: (Any => Free[F, Any])), f: (Any => Free[F, A])) => step(e.flatMap(x => g(x) flatMap f))
+      case FlatMap(Return(e), f: (Any => Free[F, A])) => step(f(e))
+      case _ => fa
+    }
+
     /***
       * Example of going from abstract trait Free to Async
       * @tparam A
       */
     type Async[A] = Free[Chapter7.Par, A]
+  }
+
+  object ConsoleIo {
+    import AbstractObj._
+    sealed trait Console[A] {
+      def toPar: Chapter7.Par[A]
+      def toThunk: () => A
+    }
+
+    case object ReadLine extends Console[Option[String]] {
+      override def toPar: Par[Option[String]] = Chapter7.Par.lazyUnit(run)
+
+      override def toThunk: () => Option[String] = () => run
+
+      def run: Option[String] = {
+        try Some(StdIn.readLine())
+        catch {
+          case _: Exception => None
+        }
+      }
+    }
+
+    case class PrintLine(line: String) extends Console[Unit] {
+      override def toPar: Par[Unit] = Chapter7.Par.lazyUnit(println(line))
+
+      override def toThunk: () => Unit = () => printline(line)
+    }
+
+    // Here we define a program that can interact with the console.
+    // We defined F[_] as Console[_]. This type can implement a thunk or a Par
+    // We are wrapping side effecting code in a structure of type Free
+    // We can pass these objects without causing side effects
+    // The run function isolates the side effects.
+
+    // Note we need a Monad to actually run ConsoleIo[A]
+    // But Console is not a monad.
+    object ConsoleIoImpl {
+      type ConsoleIo[A] = Free[Console, A]
+
+      def readLn : ConsoleIo[Option[String]] = {
+        AbstractObj.Suspend(ReadLine)
+      }
+
+      def printLn(line: String): ConsoleIo[Unit] = {
+        AbstractObj.Suspend(PrintLine(line))
+      }
+    }
+
+    trait Translate[F[_], G[_]] {
+      def apply[A](f: F[A]) : G[A]
+    }
+
+    //For trait Category[~>[_, _]], ~> is just the placeholder-name for the type-parameter of Category. Like the T in class Option[T].
+    //
+    //Additionally, Scala syntax allows you to write B ~> C as a shorthand for ~>[B, C].
+    type ~>[F[_], G[_]] = Translate[F, G]
+
+
+    // Now we can convert Console to a Monad type.
+    val consoleToFunc : Console ~> Function0 = new (Console ~> Function0) {
+      override def apply[A](f: Console[A]): () => A = f.toThunk
+    }
+
+    val consoleToPar = new (Console ~> Chapter7.Par) {
+      override def apply[A](f: Console[A]): Par[A] = f.toPar
+    }
+
+    case class Return[A, F[_]](a: A) extends Free[F, A]
+    case class Suspend[A, F[_]](r: F[A]) extends Free[F, A]
+    case class FlatMap[A, B, F[_]](el: Free[F, A], f: A => Free[F, B]) extends Free[F, B]
+
+    @tailrec
+    def step[F[_], A](fa: Free[F, A]) : Free[F, A] = fa match {
+      case FlatMap(FlatMap(e, g: (Any => Free[F, Any])), f: (Any => Free[F, A])) => step(e.flatMap(x => g(x) flatMap f))
+      case FlatMap(Return(e), f: (Any => Free[F, A])) => step(f(e))
+      case _ => fa
+    }
+
+    // Run method can take types that do not have a Monad, as long as a converter exists to a type with a Monad
+    def run[F[_], G[_], A](c: Free[F, A])(t: F ~> G)(implicit mg: Mon[G]) : G[A] = step(c) match {
+      case Return(a) => mg.unit(a)
+      case Suspend(r) => t.apply(r)
+      case FlatMap(Suspend(r), f: (Any => Free[F, A])) => mg.flatMap(t.apply(r))(x => run(f(x))(t))
+      case _ => sys.error("Already covered in step method")
+    }
+
+    // In order to run Console to a function or Par, need implicitly defined Monads
+    // Then can use the run functio and the converters.
+    implicit val function0Monad = new Mon[Function0] {
+      override def unit[A](a: => A): () => A = () => a
+
+      override def flatMap[A, B](fa: () => A)(f: A => () => B): () => B = () => f(fa())()
+    }
+
+    implicit val parMonad = new Mon[Par] {
+      override def unit[A](a: => A): Par[A] = Par.lazyUnit(a)
+
+      override def flatMap[A, B](fa: Par[A])(f: A => Par[B]): Par[B] = Par.fork{ Chapter7.flatMap(fa)(f) }
+    }
+
+    def runFunction0[A](c: Free[Console, A]) : () => A = {
+      run[Console, Function0, A](c)(consoleToFunc)
+    }
+
+    def runPar[A](c: Free[Console, A]) : Par[A] = {
+      run[Console, Par, A](c)(consoleToPar)
+    }
   }
 
   def main(args: Array[String]): Unit = {
