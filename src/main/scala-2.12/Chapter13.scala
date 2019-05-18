@@ -1,4 +1,9 @@
+import java.nio.ByteBuffer
+import java.nio.channels.{AsynchronousFileChannel, CompletionHandler}
+import java.util.concurrent.{ExecutorService, Future, TimeUnit}
+
 import Chapter11._
+import Chapter13.AbstractObj.Free
 import Chapter13.ConsoleIo.ConsoleIoImpl.ConsoleIo
 import Chapter7.Par
 
@@ -188,6 +193,10 @@ object Chapter13 {
       }
     }
 
+    /***
+      * Trade stack for heap. The case classes below implement this idea
+      * The free monad above ensures FlatMap never overflows the stack
+      */
     case class Return[A, F[_]](a: A) extends Free[F, A]
     case class Suspend[A, F[_]](r: F[A]) extends Free[F, A]
     case class FlatMap[A, B, F[_]](el: Free[F, A], f: A => Free[F, B]) extends Free[F, B]
@@ -237,12 +246,15 @@ object Chapter13 {
     sealed trait Console[A] {
       def toPar: Chapter7.Par[A]
       def toThunk: () => A
+      def toReader: ConsoleReader[A]
     }
 
     case object ReadLine extends Console[Option[String]] {
       override def toPar: Par[Option[String]] = Chapter7.Par.lazyUnit(run)
 
       override def toThunk: () => Option[String] = () => run
+
+      override def toReader: ConsoleReader[Option[String]] = ConsoleReader(_ => run)
 
       def run: Option[String] = {
         try Some(StdIn.readLine())
@@ -256,6 +268,8 @@ object Chapter13 {
       override def toPar: Par[Unit] = Chapter7.Par.lazyUnit(println(line))
 
       override def toThunk: () => Unit = () => printline(line)
+
+      override def toReader: ConsoleReader[Unit] = ConsoleReader(_ => printline(line))
     }
 
     // Here we define a program that can interact with the console.
@@ -270,11 +284,11 @@ object Chapter13 {
       type ConsoleIo[A] = Free[Console, A]
 
       def readLn : ConsoleIo[Option[String]] = {
-        AbstractObj.Suspend(ReadLine)
+        Suspend(ReadLine)
       }
 
       def printLn(line: String): ConsoleIo[Unit] = {
-        AbstractObj.Suspend(PrintLine(line))
+        Suspend(PrintLine(line))
       }
     }
 
@@ -284,7 +298,7 @@ object Chapter13 {
 
     //For trait Category[~>[_, _]], ~> is just the placeholder-name for the type-parameter of Category. Like the T in class Option[T].
     //
-    //Additionally, Scala syntax allows you to write B ~> C as a shorthand for ~>[B, C].
+    //Additionally, Scala syntax allows you to write B ~> C as a shorthand for ~>[B, C]. This type maps to Translate[F[_], G[_]]
     type ~>[F[_], G[_]] = Translate[F, G]
 
 
@@ -317,7 +331,7 @@ object Chapter13 {
     }
 
     // In order to run Console to a function or Par, need implicitly defined Monads
-    // Then can use the run functio and the converters.
+    // Then can use the run function and the converters.
     implicit val function0Monad = new Mon[Function0] {
       override def unit[A](a: => A): () => A = () => a
 
@@ -337,10 +351,180 @@ object Chapter13 {
     def runPar[A](c: Free[Console, A]) : Par[A] = {
       run[Console, Par, A](c)(consoleToPar)
     }
+
+    //Ex 13.4
+    // stack safe way of running runFunction0
+    // runTrampoline will make the Function0 implementation stack safe by isolating Function0 to the return operation.
+    def translate[F[_], G[_], A](f: Free[F, A])(fg: F ~> G): Free[G, A] = {
+      type FreeG[A] = Free[G, A]
+      val t = new (F ~> FreeG) {
+        override def apply[A](f: F[A]): FreeG[A] = Suspend(fg(f))
+      }
+
+      run(f)(t)(freeMonad[G])
+    }
+
+    def runConsole[A](a: Free[Console, A]): A = {
+      runTrampoline(translate(a)(consoleToFunc))
+    }
+
+    /*
+    -
+    -
+    -  CONSOLE READER
+    -
+    -
+     */
+    case class ConsoleReader[A](run: String => A) {
+      def map[B](f: A => B) : ConsoleReader[B] = ConsoleReader(r => f(run(r)))
+      def flatMap[B](f: A => ConsoleReader[B]) : ConsoleReader[B] = ConsoleReader(r => f(run(r)).run(r))
+    }
+
+    object ConsoleReader {
+      val consoleReaderMonad = new Mon[ConsoleReader] {
+        override def unit[A](a: => A): ConsoleReader[A] = ConsoleReader(_ => a)
+        override def flatMap[A, B](fa: ConsoleReader[A])(f: A => ConsoleReader[B]): ConsoleReader[B] = fa flatMap f
+      }
+    }
+
+    val consoleToReader = new (Console ~> ConsoleReader) {
+      override def apply[A](f: Console[A]): ConsoleReader[A] = f.toReader
+    }
+
+    def runConsoleReader[A](io: Free[Console, A]) : ConsoleReader[A] = run[Console, ConsoleReader, A](io)(consoleToReader)(ConsoleReader.consoleReaderMonad)
+
+
+    /*
+    - Side effect free code
+    - ReadLine would pop element off the input buffer
+    - PrintLine will push string onto the output buffer
+     */
+    case class Buffers(in: List[String], out: List[String])
+    case class ConsoleState[A](run: Buffers => (A, Buffers))
+    sealed trait ConsoleSimple[A] {
+      def toState: ConsoleState[A]
+    }
+
+    val consoleToState = new (ConsoleSimple ~> ConsoleState) {
+      override def apply[A](f: ConsoleSimple[A]): ConsoleState[A] = f.toState
+    }
+
+    object ConsoleState {
+      implicit val monad: Mon[ConsoleState] = new Mon[ConsoleState] {
+        override def unit[A](a: => A): ConsoleState[A] = ConsoleState(buff => (a, buff))
+
+        override def flatMap[A, B](fa: ConsoleState[A])(f: A => ConsoleState[B]): ConsoleState[B] = ConsoleState(buff => f(fa.run(buff)._1).run(buff))
+      }
+    }
+
+    def runConsoleState[A](io: Free[ConsoleSimple, A]) : ConsoleState[A] = run[ConsoleSimple, ConsoleState, A](io)(consoleToState)(ConsoleState.monad)
+
+    def consoleProgram : Free[Console, Unit] = for {
+      _ <- ConsoleIoImpl.printLn("Please enter your name")
+      n <- ConsoleIoImpl.readLn
+      _ <- n match {
+        case Some(s) => ConsoleIoImpl.printLn(s"Hello $s")
+        case None => ConsoleIoImpl.printLn("Fine, be that way.")
+      }
+    } yield()
+
+
+    // Define async IO operation that will be non blocking.
+    trait Source {
+      def readBytes(numBytes: Int, callback: Either[Throwable, Array[Byte]] => Unit) : Unit
+    }
+
+
+    // Wrap read operation in a future.
+
+    def async[A](run: (A => Unit) => Unit) : Par[A] = es => new Future[A] {
+      def apply(k : A => Unit) = run(k)
+
+      override def cancel(mayInterruptIfRunning: Boolean): Boolean = ???
+
+      override def isCancelled: Boolean = ???
+
+      override def isDone: Boolean = ???
+
+      override def get(): A = ???
+
+      override def get(timeout: Long, unit: TimeUnit): A = ???
+    }
+
+    // Return the Par type which was wrapped above. Makes the non blocking operation a Par monad.
+
+    def nonblockingRead(source : Source, numBytes: Int) : Par[Either[Throwable, Array[Byte]]] = async {
+      (cb: Either[Throwable, Array[Byte]] => Unit) => source.readBytes(numBytes, cb)
+    }
+
+    // Wrap non blocking read in susped operation to enable trampolining.
+    def readPar(source: Source, numBytes: Int) : Free[Par, Either[Throwable, Array[Byte]]] = Suspend(nonblockingRead(source, numBytes))
+
+
+    // Can now use for comprehensions
+    val source: Source = ???
+    val prog: Free[Par, Unit] = for {
+      chunk1 <- readPar(source, 1024)
+      chunk2 <- readPar(source, 1024)
+    } yield()
+
+    // Ex 13.5
+    def read(file: AsynchronousFileChannel, fromPosition: Long, numBytes: Int) : Par[Either[Throwable, Array[Byte]]] = {
+      async {
+        (cb: Either[Throwable, Array[Byte]] => Unit) => {
+          val buffer = ByteBuffer.allocate(numBytes)
+          file.read(buffer, fromPosition, (), new CompletionHandler[Integer, Unit] {
+            override def completed(bytesRead: Integer, attachment: Unit): Unit = {
+              val result = new Array[Byte](bytesRead)
+              buffer.slice().get(result, 0, bytesRead)
+              cb(Right(result))
+            }
+
+            override def failed(exc: Throwable, attachment: Unit): Unit = {
+              cb(Left(exc))
+            }
+          })
+
+        }
+      }
+    }
+
+    /***
+      * General strategy
+      * For any given set of I/O operations we want to support
+      * Write algebraic data type whose case classes represent individual operations
+      * Files for file I/O, DB for database access, Console for standard input/output
+      *
+      * For any such data type F, generate free monad Free[F, A]
+      * Test individually
+      * Then compile down to lower level I/O type IO[A] = Free[Par, A]
+      *
+      * All we need is a translation from any given type F to Par
+      */
+
+    object FinalStrategy {
+      type IO[A] = Free[Par, A]
+      abstract class App {
+        import java.util.concurrent._
+
+        val parToPar = new (Par ~> Par) {
+          override def apply[A](f: Par[A]): Par[A] = f
+        }
+
+        def unsafePerformIO[A](a: IO[A])(pool: ExecutorService) : Future[A] = {
+          Par.run(pool)(run(a)(parToPar)(parMonad))
+        }
+      }
+    }
+
+
   }
 
   def main(args: Array[String]): Unit = {
     println("Test")
+
+    // The case statement in run is not recognizing the FlatMap(Suspend(r), f) case as valid.
+    ConsoleIo.runPar(ConsoleIo.consoleProgram)
   }
 
 
