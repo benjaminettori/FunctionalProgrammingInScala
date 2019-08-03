@@ -86,7 +86,7 @@ object Chapter11 {
       new  Mon[({type f[x] = F[G[x]]})#f] {
         override def unit[A](a: => A): F[G[A]] = self.unit(G.unit(a))
 
-        // this will not work because the function f returns F[G[B] which is not the argunment needed for G.flatmap.
+        // this will not work because the function f returns F[G[B] which is not the argument needed for G.flatmap.
         override def flatMap[A, B](fa: F[G[A]])(f: A => F[G[B]]): F[G[B]] = ???
       }
     }

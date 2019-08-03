@@ -1,4 +1,4 @@
-name := "ScalaFunctionalProgramming"
+name := "FunctionalProgrammingInScala"
 
 version := "1.0"
 
@@ -8,5 +8,7 @@ resolvers += "Typesafe Repository" at "http://repo.typesafe.com/typesafe/release
 
 libraryDependencies ++= Seq(
   "com.typesafe.akka" %% "akka-actor" % "2.5.12",
+  "org.typelevel" %% "cats-effect" % "1.3.1",
+  "com.softwaremill.quicklens" %% "quicklens" % "1.4.12",
   "com.typesafe.akka" %% "akka-testkit" % "2.5.12" % Test
 )
